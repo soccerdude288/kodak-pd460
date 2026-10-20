@@ -97,7 +97,9 @@ FAULTS = {
     9: "cooling down",
     10: "unrecoverable error",
     # Error codes sent as `04 04 <code> 00` once a job has started.
-    0x14: "out of paper",
+    # Seen with no paper, and with new paper but a used-up cartridge: the
+    # matched paper/ribbon pack is finished.
+    0x14: "out of paper or ribbon",
 }
 
 # Faults worth retrying later rather than failing the job outright.

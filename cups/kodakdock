@@ -80,7 +80,7 @@ def print_page(address, channel, jpeg, page, pages):
             if state:
                 print(f"STATE: +{state}", file=sys.stderr, flush=True)
             reason = FAULTS.get(frame.arg2, f"error {frame.arg2:#04x}")
-            log("INFO", f"Printer {reason}; fix it and the print will continue")
+            log("INFO", f"Printer {reason}; load a new pack and the print will continue")
         elif frame.arg1 == 3:
             for state in set(FAULT_STATES.values()):
                 print(f"STATE: -{state}", file=sys.stderr, flush=True)
