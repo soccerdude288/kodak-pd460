@@ -22,30 +22,43 @@
 *cupsManualCopies: False
 *cupsFilter: "application/vnd.cups-raster 0 rastertokodakdock"
 
-*% Dye-sub 4x6 only. "4x6.Fullbleed" fills the sheet; "4x6" keeps a white
-*% border of 12 pt (about 4 mm), which AirPrint clients lay out themselves.
-*% The filter maps either page onto the part of the raster the printer
-*% actually puts on paper.
+*% Dye-sub 4x6 only, borderless. The filter maps the page onto the part of
+*% the raster the printer actually puts on paper. A white border is a driver
+*% option (KodakBorder, used as a queue default for a "white border" printer,
+*% since iOS shows no per-printer options) and a paper type for clients that
+*% show one, such as macOS.
 *OpenUI *PageSize/Media Size: PickOne
 *OrderDependency: 10 AnySetup *PageSize
 *DefaultPageSize: 4x6.Fullbleed
 *PageSize 4x6.Fullbleed/4x6 in Borderless: "<</PageSize[288 432]/ImagingBBox null>>setpagedevice"
-*PageSize 4x6/4x6 in, White Border: "<</PageSize[288 432]/ImagingBBox null>>setpagedevice"
 *CloseUI: *PageSize
 
 *OpenUI *PageRegion/Media Size: PickOne
 *OrderDependency: 10 AnySetup *PageRegion
 *DefaultPageRegion: 4x6.Fullbleed
 *PageRegion 4x6.Fullbleed/4x6 in Borderless: "<</PageSize[288 432]/ImagingBBox null>>setpagedevice"
-*PageRegion 4x6/4x6 in, White Border: "<</PageSize[288 432]/ImagingBBox null>>setpagedevice"
 *CloseUI: *PageRegion
 
 *DefaultImageableArea: 4x6.Fullbleed
 *ImageableArea 4x6.Fullbleed/4x6 in Borderless: "0 0 288 432"
-*ImageableArea 4x6/4x6 in, White Border: "12 12 276 420"
 *DefaultPaperDimension: 4x6.Fullbleed
 *PaperDimension 4x6.Fullbleed/4x6 in Borderless: "288 432"
-*PaperDimension 4x6/4x6 in, White Border: "288 432"
+
+*% Border as a paper type too; AirPrint clients that show "Paper Type" can
+*% pick it. The filter reads it from the raster header's MediaType.
+*OpenUI *MediaType/Paper Type: PickOne
+*OrderDependency: 10 AnySetup *MediaType
+*DefaultMediaType: photographic
+*MediaType photographic/Photo (Borderless): "<</MediaType(photographic)>>setpagedevice"
+*MediaType white-border/Photo with White Border: "<</MediaType(white-border)>>setpagedevice"
+*CloseUI: *MediaType
+
+*OpenUI *KodakBorder/Border: PickOne
+*OrderDependency: 20 AnySetup *KodakBorder
+*DefaultKodakBorder: None
+*KodakBorder None/Borderless: ""
+*KodakBorder White/White Border: ""
+*CloseUI: *KodakBorder
 
 *OpenUI *ColorModel/Color Mode: PickOne
 *OrderDependency: 10 AnySetup *ColorModel

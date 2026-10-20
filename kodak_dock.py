@@ -75,6 +75,8 @@ SAFE_MARGINS = (45, 48, 18, 48)  # left, top, right, bottom
 # Extra pixels the page extends past the visible window, so paper registration
 # never shows a white sliver at an edge.
 BLEED = 8
+# Width of the optional white border, in raster pixels (about 4 mm on paper).
+BORDER = 45
 
 FAULTS = {
     1: "general fault",
@@ -338,6 +340,7 @@ def prepare_image(
     quality=90,
     margins=SAFE_MARGINS,
     bleed=BLEED,
+    border=0,
 ):
     """Return baseline JPEG bytes sized for the printer.
 
@@ -352,6 +355,9 @@ def prepare_image(
     paper (`margins` trimmed at left, top, right, bottom), extended by `bleed`
     pixels. The rest of the raster repeats the outermost pixels, so it prints
     as a continuation of the edge rather than as white.
+
+    With `border` > 0 the image instead sits inside that window with a white
+    border of `border` pixels on every side.
     """
     from PIL import Image, ImageOps
 
@@ -361,14 +367,26 @@ def prepare_image(
         img = img.rotate(90, expand=True)
 
     left, top, right, bottom = margins
+    if border:
+        inner = (width - left - right - 2 * border, height - top - bottom - 2 * border)
+        if fit == "contain":
+            page = ImageOps.pad(img, inner, Image.LANCZOS, color="white")
+        else:
+            page = ImageOps.fit(img, inner, Image.LANCZOS)
+        canvas = Image.new("RGB", (width, height), "white")
+        canvas.paste(page, (left + border, top + border))
+        return _encode(canvas, quality)
+
     x0, y0 = max(left - bleed, 0), max(top - bleed, 0)
     box = (min(width - right + bleed, width) - x0, min(height - bottom + bleed, height) - y0)
     if fit == "contain":
         page = ImageOps.pad(img, box, Image.LANCZOS, color="white")
     else:
         page = ImageOps.fit(img, box, Image.LANCZOS)
-    img = _extend_edges(page, (x0, y0), (width, height))
+    return _encode(_extend_edges(page, (x0, y0), (width, height)), quality)
 
+
+def _encode(img, quality):
     out = io.BytesIO()
     img.save(out, "JPEG", quality=quality, subsampling=2, optimize=False, progressive=False)
     return out.getvalue()
@@ -383,6 +401,7 @@ def _cli():
     parser.add_argument("--modern", action="store_true", help="use the modern 0x10/0x12 opcode pair")
     parser.add_argument("--copies", type=int, default=1)
     parser.add_argument("--fit", choices=("cover", "contain"), default="cover")
+    parser.add_argument("--border", action="store_true", help="print with a white border")
     parser.add_argument("--dry-run", metavar="OUT.jpg", help="write the prepared JPEG and exit")
     parser.add_argument("--raw", action="store_true", help="send the image file's bytes unmodified")
     parser.add_argument("-v", "--verbose", action="store_true", help="hex-dump every frame")
@@ -396,7 +415,7 @@ def _cli():
             with open(args.image, "rb") as f:
                 image = f.read()
         else:
-            image = prepare_image(args.image, fit=args.fit)
+            image = prepare_image(args.image, fit=args.fit, border=BORDER if args.border else 0)
         if args.dry_run:
             with open(args.dry_run, "wb") as f:
                 f.write(image)

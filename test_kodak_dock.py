@@ -136,5 +136,20 @@ class PrepareImageTest(unittest.TestCase):
             self.assertEqual(out.format, "JPEG")
 
 
+    def test_white_border(self):
+        from PIL import Image
+        import io
+
+        jpeg = kd.prepare_image(Image.new("RGB", (1200, 1800), "red"), border=kd.BORDER)
+        out = Image.open(io.BytesIO(jpeg)).convert("RGB")
+        left, top, right, bottom = kd.SAFE_MARGINS
+        b = kd.BORDER
+        # White in the border on every side, red inside it.
+        for x, y in ((left + b // 2, 900), (1239 - right - b // 2, 900), (620, top + b // 2), (620, 1863 - bottom - b // 2)):
+            self.assertTrue(all(c > 240 for c in out.getpixel((x, y))), (x, y))
+        r, g, bl = out.getpixel((620, 932))
+        self.assertTrue(r > 200 and g < 60 and bl < 60)
+
+
 if __name__ == "__main__":
     unittest.main()

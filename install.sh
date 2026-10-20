@@ -2,7 +2,10 @@
 # Deploy the Kodak PD460 driver to a Linux CUPS host over SSH.
 #
 #   HOST=pi@printserver.local ./install.sh                     driver files only
-#   HOST=pi@printserver.local ./install.sh AA:BB:CC:DD:EE:FF   also create a shared queue
+#   HOST=pi@printserver.local ./install.sh AA:BB:CC:DD:EE:FF   also create shared queues
+#
+# Two queues share the printer: QUEUE (borderless) and QUEUE-Border (white
+# border), so iOS users pick the look by picking the printer.
 #
 # The host needs CUPS, python3-pil and Bluetooth; the remote user needs sudo.
 set -eu
@@ -23,9 +26,13 @@ install -m 644 /tmp/kodak-pd460.ppd /usr/share/ppd/kodak/kodak-pd460.ppd
 rm -f /tmp/kodak_dock.py /tmp/kodakdock /tmp/rastertokodakdock /tmp/kodak-pd460.ppd
 if [ -n "$ADDR" ]; then
   cupsctl --share-printers
+  # cupsctl restarts the scheduler; wait for it before lpadmin.
+  for i in 1 2 3 4 5 6 7 8 9 10; do lpstat -r >/dev/null 2>&1 && break; sleep 1; done
   lpadmin -p "$QUEUE" -E -v "kodakdock://$ADDR" -P /usr/share/ppd/kodak/kodak-pd460.ppd \
-    -D "Kodak PD460 (Bluetooth)" -L "\$(hostname)" -o printer-is-shared=true
-  cupsenable "$QUEUE"; cupsaccept "$QUEUE"
+    -D "Kodak PD460" -L "\$(hostname)" -o printer-is-shared=true -o KodakBorder=None
+  lpadmin -p "$QUEUE-Border" -E -v "kodakdock://$ADDR" -P /usr/share/ppd/kodak/kodak-pd460.ppd \
+    -D "Kodak PD460 (White Border)" -L "\$(hostname)" -o printer-is-shared=true -o KodakBorder=White
+  for q in "$QUEUE" "$QUEUE-Border"; do cupsenable "\$q"; cupsaccept "\$q"; done
 fi
 EOF
 echo "installed on $HOST${ADDR:+, queue $QUEUE -> kodakdock://$ADDR}"

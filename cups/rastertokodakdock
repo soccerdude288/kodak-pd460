@@ -12,11 +12,12 @@ arrives here already repeated.
 Usage (CUPS filter convention): rastertokodakdock job user title copies options [file]
 """
 
+import os
 import struct
 import sys
 
 sys.path.insert(0, "/usr/local/lib/kodak-dock")
-from kodak_dock import prepare_image  # noqa: E402
+from kodak_dock import BORDER, prepare_image  # noqa: E402
 
 HEADER_SIZE = 1796
 MAGIC = b"KDJ1"
@@ -29,6 +30,8 @@ OFF_BITS_PER_PIXEL = 388
 OFF_BYTES_PER_LINE = 392
 OFF_COLOR_ORDER = 396
 OFF_COLOR_SPACE = 400
+OFF_MEDIA_TYPE = 128  # MediaType[64]
+OFF_PAGE_SIZE_NAME = 1732  # cupsPageSizeName[64]
 
 CSPACE_W = 0      # luminance
 CSPACE_RGB = 1
@@ -108,7 +111,28 @@ def read_pages(f):
             for _ in range(height):
                 pixels += read_exact(f, bytes_per_line)[: width * bpp]
 
-        yield width, height, mode, bytes(pixels)
+        def text(off):
+            return header[off:off + 64].split(b"\0", 1)[0].decode("ascii", "replace")
+
+        yield width, height, mode, bytes(pixels), text(OFF_PAGE_SIZE_NAME), text(OFF_MEDIA_TYPE)
+
+
+def border_option(options):
+    """The KodakBorder setting: job options first, then the queue's PPD default."""
+    for opt in options.split():
+        name, _, value = opt.partition("=")
+        if name == "KodakBorder":
+            return value
+    ppd = os.environ.get("PPD")
+    if ppd:
+        try:
+            with open(ppd, encoding="latin-1") as f:
+                for line in f:
+                    if line.startswith("*DefaultKodakBorder:"):
+                        return line.split(":", 1)[1].strip()
+        except OSError:
+            pass
+    return "None"
 
 
 def main():
@@ -122,13 +146,16 @@ def main():
     out = sys.stdout.buffer
     out.write(MAGIC)
 
+    border = BORDER if border_option(sys.argv[5]) == "White" else 0
     pages = 0
     try:
-        for width, height, mode, pixels in read_pages(src):
+        for width, height, mode, pixels, size_name, media_type in read_pages(src):
             pages += 1
-            log("INFO", f"Preparing page {pages} ({width}x{height})")
+            log("INFO", f"Preparing page {pages} ({width}x{height}, {size_name or '-'}, {media_type or '-'})")
             img = Image.frombytes(mode, (width, height), pixels)
-            jpeg = prepare_image(img)
+            # A white border comes from the queue/job option or the paper type.
+            page_border = BORDER if media_type == "white-border" else border
+            jpeg = prepare_image(img, border=page_border)
             out.write(struct.pack(">I", len(jpeg)))
             out.write(jpeg)
             out.flush()

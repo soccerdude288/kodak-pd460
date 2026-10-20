@@ -58,13 +58,15 @@ HOST=pi@printserver.local ./install.sh AA:BB:CC:DD:EE:FF
 ```
 
 This installs the filter, backend and PPD, turns on CUPS printer sharing and
-creates a shared queue `Kodak-PD460`. Avahi then advertises it, and iOS and
-macOS list it as an AirPrint printer. A print takes about 90 seconds once the
-job reaches the printer.
+creates two shared queues for the same printer:
 
-The queue offers two paper sizes: **4x6 Borderless** (the default) and
-**4x6, White Border** (about a 4 mm margin). On an iPhone or iPad, pick them
-under Paper Size in the print sheet.
+- `Kodak-PD460`: borderless
+- `Kodak-PD460-Border`: with a white border of about 4 mm
+
+Avahi advertises both, and iOS and macOS list them as AirPrint printers. iOS
+has no per-printer options, so choosing the look means choosing the printer.
+On macOS the border is also available as a Paper Type. A print takes about 90
+seconds once the job reaches the printer.
 
 ### Positioning
 
