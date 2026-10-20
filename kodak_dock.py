@@ -53,7 +53,7 @@ SESSION_END = 0x14
 # States carried in arg1 of P_STATE / P_NOTIFY frames.
 READY = 1
 MEDIA_INFO = 3
-ERROR = 4        # P_STATE: printer error, code in arg2 (e.g. 0x14 out of paper)
+ERROR = 4        # P_STATE: printer error, code in arg2 (e.g. 0x14 out of paper or ribbon)
 NEEDS_ACK = 5
 FINISHED = 6
 
