@@ -19,11 +19,12 @@ def frame(op, a1=0, a2=0, a3=0, payload=b""):
 class FakePrinter(threading.Thread):
     """Speaks the printer side; records what the host sent."""
 
-    def __init__(self, sock, fault=None):
+    def __init__(self, sock, fault=None, hot=False):
         super().__init__(daemon=True)
         self.sock = sock
         self.conn = kd.Connection(None, sock=sock)
         self.fault = fault
+        self.hot = hot
         self.image = b""
         self.error = None
 
@@ -46,6 +47,9 @@ class FakePrinter(threading.Thread):
                 return
             s.sendall(frame(*BATTERY))                   # status; the job starts on it
             job = self.expect(0x05)
+            if self.hot:
+                s.sendall(frame(0x04, 1, 3, 0xC6, b"\x2a"))  # ignored while hot: status again
+                job = self.expect(0x05)                  # so the job is offered again
             s.sendall(frame(0x01, 5, 1, 0))              # needs ack
             assert self.expect(0x07).arg1 == 0
             length = struct.unpack(">I", job.payload[:4])[0]
@@ -65,11 +69,11 @@ class FakePrinter(threading.Thread):
 
 
 class PrintJobTest(unittest.TestCase):
-    def run_job(self, image, fault=None):
+    def run_job(self, image, fault=None, hot=False):
         host, printer = socket.socketpair()
         host.settimeout(5)
         printer.settimeout(5)
-        fake = FakePrinter(printer, fault)
+        fake = FakePrinter(printer, fault, hot)
         fake.start()
         job = kd.PrintJob(kd.Connection(None, sock=host), image)
         try:
@@ -88,6 +92,12 @@ class PrintJobTest(unittest.TestCase):
         self.assertEqual(fake.image, image)
         self.assertEqual(job.session_reply.arg3, 0x36)
         self.assertEqual(job.battery, 0x3C6)
+
+    def test_job_reoffered_while_hot(self):
+        image = bytes(range(256)) * 100
+        fake, job = self.run_job(image, hot=True)
+        self.assertEqual(fake.image, image)
+        self.assertEqual(job.temperature, 0x2A)
 
     def test_fault_raises(self):
         with self.assertRaises(kd.PrinterFault) as ctx:

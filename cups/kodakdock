@@ -69,9 +69,18 @@ def print_page(address, channel, jpeg, page, pages):
     def progress(sent, total):
         log("INFO", f"Sending page {page}/{pages}: {100 * sent // total}%")
 
+    offers = 0
+
     def status(frame):
+        nonlocal offers
         if frame.arg1 == 3:
             log("INFO", f"Printing page {page}/{pages}")
+        elif frame.arg1 == 1:
+            # Each of these re-offers the job; a second one means the printer
+            # ignored the first, which it does while the head cools down.
+            offers += 1
+            if offers > 1:
+                log("INFO", "Waiting for the printer to cool down")
 
     attempts = 0
     while True:

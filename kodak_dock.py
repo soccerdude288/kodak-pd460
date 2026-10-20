@@ -60,6 +60,9 @@ DEFAULT_JOB_ID = 12231
 
 # Longest silence tolerated while a sheet is printing.
 PRINT_TIMEOUT = 300.0
+# How long to keep re-offering a job the printer is ignoring (it does that
+# while the head cools after a print) before giving up as "cooling down".
+ACCEPT_TIMEOUT = 600.0
 
 # PD460 raster geometry: 4x6 portrait.
 PD460_WIDTH = 1240
@@ -184,6 +187,12 @@ class PrintJob:
         self.media_type = None
         self.data_sent = False
         self.job_started = False
+        # Set once the printer acknowledges the job start or asks for data.
+        # Until then a hot printer silently ignores job starts, so each status
+        # frame gets a fresh one.
+        self.accepted = False
+        self.temperature = None
+        self.first_start = None
         self.battery = None
         # Start the job on the first status frame. The app waits for a READY
         # with arg2 == 0, but the PD460 only ever sends battery-style status
@@ -219,6 +228,8 @@ class PrintJob:
                     self.session_reply = frame
                 self.conn.send(Frame(SESSION_START, 1, SESSION_PROTOCOL_REVISION))
             elif op == P_NOTIFY:
+                if self.job_started:
+                    self.accepted = True
                 if frame.arg1 == NEEDS_ACK:
                     self.conn.send(Frame(ACK, frame.arg3))
             elif op == P_STATE:
@@ -226,6 +237,8 @@ class PrintJob:
                 if self._handle_state(frame, response_timeout):
                     return
             elif op == P_REQUEST:
+                if self.job_started:
+                    self.accepted = True
                 self._send_data(frame)
             elif op in (JOB_COMPLETE, SESSION_END):
                 return
@@ -239,8 +252,13 @@ class PrintJob:
             raise PrinterFault(frame.arg3)
         if state == READY:
             if frame.arg2 != 0:
-                # Status report, not READY: battery = arg2 << 8 | arg3.
+                # Status report, not READY: battery = arg2 << 8 | arg3. The
+                # payload byte rises after a print (0x17 cool, 0x23-0x2c
+                # warm), probably head temperature; jobs started right after
+                # a print can be silently ignored, hence the re-offers below.
                 self.battery = (frame.arg2 << 8) | frame.arg3
+                if frame.payload:
+                    self.temperature = frame.payload[0]
                 if self.image is None:
                     return self.session_reply is not None
                 if not self.start_on_status:
@@ -249,7 +267,14 @@ class PrintJob:
                 raise PrinterFault(10)
             if self.image is None:
                 return True
-            if not self.job_started:
+            if not self.accepted:
+                # First start, or the printer ignored the last one while it
+                # cooled down (it sends status but never acks or asks for data).
+                now = time.monotonic()
+                if self.first_start is None:
+                    self.first_start = now
+                elif now - self.first_start > ACCEPT_TIMEOUT:
+                    raise PrinterFault(9)
                 self.job_started = True
                 self.conn.send(self._job_start())
         elif state == MEDIA_INFO:

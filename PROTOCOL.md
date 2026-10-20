@@ -130,7 +130,13 @@ at least on the PD460:
    does not treat as "ready". The PD460 never sends `04 01 00 ..`, but it
    prints when the job is started on the status frame, as the reference
    driver does.
-5. **Do not send `70` (device info) in an open session.** The PD460 answers it
+5. **A job start right after a print can be silently ignored.** For a while
+   after printing (the status payload byte reads `0x23`–`0x2c` instead of
+   about `0x17`, probably head temperature), the printer neither acks `05`
+   nor asks for data. It keeps sending `04 01` status frames, roughly one
+   per `03` status poll. Sending `05` again on each status frame until it is
+   acknowledged starts the job as soon as the printer is ready.
+6. **Do not send `70` (device info) in an open session.** The PD460 answers it
    with a data request, as if a job had started.
 
 ## Open questions
