@@ -1,0 +1,138 @@
+#!/usr/bin/env python3
+"""CUPS backend for Kodak PD460 (Prinics) printers over Bluetooth RFCOMM.
+
+Device URI: kodakdock://AA-BB-CC-DD-EE-FF[?channel=1]
+
+Reads the KDJ1 stream written by rastertokodakdock and prints each JPEG in
+its own Bluetooth session, the way the official app does.
+"""
+
+import os
+import socket
+import struct
+import sys
+import time
+
+sys.path.insert(0, "/usr/local/lib/kodak-dock")
+from kodak_dock import TRANSIENT_FAULTS, Connection, PrinterFault, PrintJob  # noqa: E402
+
+CUPS_BACKEND_OK = 0
+CUPS_BACKEND_FAILED = 1
+CUPS_BACKEND_RETRY = 6
+
+# How long to wait out "busy" / "cooling down" before giving the job back to CUPS.
+TRANSIENT_WAIT = 30
+TRANSIENT_LIMIT = 20
+
+FAULT_STATES = {
+    2: "cover-open-error",
+    3: "media-jam-error",
+    4: "media-empty-error",
+    5: "marker-supply-empty-error",
+    7: "marker-supply-empty-error",
+    8: "media-type-mismatch-error",
+}
+
+
+def log(level, msg):
+    print(f"{level}: {msg}", file=sys.stderr, flush=True)
+
+
+def parse_uri(uri):
+    rest = uri.split("://", 1)[1]
+    address, _, query = rest.partition("?")
+    # CUPS rejects colons in the host part, so the URI uses dashes.
+    address = address.strip("/").replace("-", ":").upper()
+    channel = 1
+    for part in query.split("&"):
+        key, _, value = part.partition("=")
+        if key == "channel" and value:
+            channel = int(value)
+    return address, channel
+
+
+def read_jobs(f):
+    if f.read(4) != b"KDJ1":
+        raise ValueError("input is not a kodakdock job stream (wrong filter?)")
+    while True:
+        head = f.read(4)
+        if len(head) < 4:
+            return
+        (length,) = struct.unpack(">I", head)
+        data = f.read(length)
+        if len(data) != length:
+            raise ValueError("truncated job stream")
+        yield data
+
+
+def print_page(address, channel, jpeg, page, pages):
+    def progress(sent, total):
+        log("INFO", f"Sending page {page}/{pages}: {100 * sent // total}%")
+
+    def status(frame):
+        if frame.arg1 == 3:
+            log("INFO", f"Printing page {page}/{pages}")
+
+    attempts = 0
+    while True:
+        conn = Connection(address, channel, log=lambda m: log("DEBUG", m))
+        try:
+            PrintJob(conn, jpeg, on_status=status, on_progress=progress).run()
+            return
+        except PrinterFault as e:
+            if e.detail in TRANSIENT_FAULTS and attempts < TRANSIENT_LIMIT:
+                attempts += 1
+                log("INFO", f"Printer {e}; waiting {TRANSIENT_WAIT}s")
+                time.sleep(TRANSIENT_WAIT)
+                continue
+            raise
+        finally:
+            conn.close()
+
+
+def main():
+    if len(sys.argv) == 1:
+        print('direct kodakdock "Unknown" "Kodak PD460 Photo Printer (Bluetooth)"')
+        return CUPS_BACKEND_OK
+
+    if len(sys.argv) not in (6, 7):
+        print("Usage: kodakdock job user title copies options [file]", file=sys.stderr)
+        return CUPS_BACKEND_FAILED
+
+    uri = os.environ.get("DEVICE_URI", "")
+    if not uri.startswith("kodakdock://"):
+        log("ERROR", f"Bad device URI {uri!r}")
+        return CUPS_BACKEND_FAILED
+    address, channel = parse_uri(uri)
+
+    src = open(sys.argv[6], "rb") if len(sys.argv) == 7 else sys.stdin.buffer
+    try:
+        jobs = list(read_jobs(src))
+    except ValueError as e:
+        log("ERROR", str(e))
+        return CUPS_BACKEND_FAILED
+
+    for state in set(FAULT_STATES.values()):
+        print(f"STATE: -{state}", file=sys.stderr)
+
+    log("INFO", f"Connecting to {address}")
+    for i, jpeg in enumerate(jobs, 1):
+        try:
+            print_page(address, channel, jpeg, i, len(jobs))
+        except PrinterFault as e:
+            state = FAULT_STATES.get(e.detail)
+            if state:
+                print(f"STATE: +{state}", file=sys.stderr)
+            log("ERROR", f"Printer fault: {e}")
+            return CUPS_BACKEND_RETRY
+        except (OSError, TimeoutError, ConnectionError) as e:
+            # Off, asleep, out of range, or the link dropped mid-job.
+            log("ERROR", f"Printer {address} not reachable over Bluetooth: {e}")
+            return CUPS_BACKEND_RETRY
+
+    log("INFO", "Ready to print.")
+    return CUPS_BACKEND_OK
+
+
+if __name__ == "__main__":
+    sys.exit(main())

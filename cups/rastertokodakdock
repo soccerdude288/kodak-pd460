@@ -1,0 +1,147 @@
+#!/usr/bin/env python3
+"""CUPS filter: application/vnd.cups-raster -> Kodak PD460 job stream.
+
+Each raster page becomes one 1240x1864 baseline JPEG. The output is a tiny
+container the kodakdock backend reads back:
+
+    b"KDJ1", then per page: u32 big-endian length, JPEG bytes
+
+Copies are left to CUPS (cupsManualCopies is False in the PPD), so every page
+arrives here already repeated.
+
+Usage (CUPS filter convention): rastertokodakdock job user title copies options [file]
+"""
+
+import struct
+import sys
+
+sys.path.insert(0, "/usr/local/lib/kodak-dock")
+from kodak_dock import prepare_image  # noqa: E402
+
+HEADER_SIZE = 1796
+MAGIC = b"KDJ1"
+
+# Offsets into cups_page_header2_t.
+OFF_WIDTH = 372
+OFF_HEIGHT = 376
+OFF_BITS_PER_COLOR = 384
+OFF_BITS_PER_PIXEL = 388
+OFF_BYTES_PER_LINE = 392
+OFF_COLOR_ORDER = 396
+OFF_COLOR_SPACE = 400
+
+CSPACE_W = 0      # luminance
+CSPACE_RGB = 1
+CSPACE_SW = 18    # sGray
+CSPACE_SRGB = 19
+
+
+def log(level, msg):
+    print(f"{level}: {msg}", file=sys.stderr, flush=True)
+
+
+def read_exact(f, n):
+    buf = f.read(n)
+    if len(buf) != n:
+        raise EOFError
+    return buf
+
+
+def decode_line(f, bytes_per_line, bpp):
+    """Decode one PackBits-style line from a v2 (compressed) raster stream."""
+    line = bytearray()
+    while len(line) < bytes_per_line:
+        count = read_exact(f, 1)[0]
+        if count & 0x80:
+            # 257 - count literal pixels.
+            line += read_exact(f, (257 - count) * bpp)
+        else:
+            # The next pixel repeated count + 1 times.
+            line += read_exact(f, bpp) * (count + 1)
+    return bytes(line[:bytes_per_line])
+
+
+def read_pages(f):
+    """Yield (width, height, mode, pixels) for each page in a CUPS raster stream."""
+    sync = read_exact(f, 4)
+    if sync in (b"RaSt", b"RaS2", b"RaS3"):
+        endian = ">"
+    elif sync in (b"tSaR", b"2SaR", b"3SaR"):
+        endian = "<"
+    else:
+        raise ValueError(f"not a CUPS raster stream (sync {sync!r})")
+    compressed = sync in (b"RaS2", b"2SaR")
+
+    while True:
+        try:
+            header = read_exact(f, HEADER_SIZE)
+        except EOFError:
+            return
+
+        def u32(off):
+            return struct.unpack_from(endian + "I", header, off)[0]
+
+        width, height = u32(OFF_WIDTH), u32(OFF_HEIGHT)
+        bits, bpp_bits = u32(OFF_BITS_PER_COLOR), u32(OFF_BITS_PER_PIXEL)
+        bytes_per_line = u32(OFF_BYTES_PER_LINE)
+        order, cspace = u32(OFF_COLOR_ORDER), u32(OFF_COLOR_SPACE)
+
+        if bits != 8 or order != 0:
+            raise ValueError(f"unsupported raster: {bits} bits/color, color order {order}")
+        if cspace in (CSPACE_RGB, CSPACE_SRGB) and bpp_bits == 24:
+            mode, bpp = "RGB", 3
+        elif cspace in (CSPACE_W, CSPACE_SW) and bpp_bits == 8:
+            mode, bpp = "L", 1
+        else:
+            raise ValueError(f"unsupported color space {cspace} at {bpp_bits} bits/pixel")
+
+        pixels = bytearray()
+        if compressed:
+            y = 0
+            while y < height:
+                repeat = read_exact(f, 1)[0] + 1
+                line = decode_line(f, bytes_per_line, bpp)
+                repeat = min(repeat, height - y)
+                pixels += line[: width * bpp] * repeat
+                y += repeat
+        else:
+            for _ in range(height):
+                pixels += read_exact(f, bytes_per_line)[: width * bpp]
+
+        yield width, height, mode, bytes(pixels)
+
+
+def main():
+    from PIL import Image
+
+    if len(sys.argv) not in (6, 7):
+        print("Usage: rastertokodakdock job user title copies options [file]", file=sys.stderr)
+        return 1
+
+    src = open(sys.argv[6], "rb") if len(sys.argv) == 7 else sys.stdin.buffer
+    out = sys.stdout.buffer
+    out.write(MAGIC)
+
+    pages = 0
+    try:
+        for width, height, mode, pixels in read_pages(src):
+            pages += 1
+            log("INFO", f"Preparing page {pages} ({width}x{height})")
+            img = Image.frombytes(mode, (width, height), pixels)
+            jpeg = prepare_image(img)
+            out.write(struct.pack(">I", len(jpeg)))
+            out.write(jpeg)
+            out.flush()
+    except (ValueError, EOFError) as e:
+        log("ERROR", f"Bad raster input: {e}")
+        return 1
+
+    if pages == 0:
+        log("ERROR", "No pages in job")
+        return 1
+    log("DEBUG", f"rastertokodakdock wrote {pages} page(s)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
