@@ -49,6 +49,7 @@ opcodes.
 | `04` `arg1=1` | status; `arg2:arg3` is a battery-like value | start the job (see below) |
 | `04` `arg1=3` | printing; payload byte 7 is the pass number (1, 2, 3) | none |
 | `04` `arg1=6` | finished | `01 00 00 00` (end job) |
+| `04` `arg1=4` | error during a job, code in `arg2` (`0x14` = out of paper) | wait; send `0b` (resume) once fixed |
 | `04` `arg1=0`, `arg3≠0` | fault, code in `arg3` | abort |
 | `01` `arg1=5` | needs acknowledgement | `07 <arg3> 00 00` |
 | `08` | data request; payload = offset u32, length u32 | `09 <arg1> <arg2> 00` + exactly `length` bytes from `offset` |
@@ -64,6 +65,7 @@ opcodes.
 | `09` + data | image slice |
 | `01` | end job |
 | `03` | status poll; the official app sends it after 30 s of silence |
+| `0b` | resume after an error (the app's "resume" button) |
 
 ## Image
 
@@ -110,6 +112,21 @@ Real trace, `<-` printer to host, `->` host to printer:
 ```
 
 About 90 seconds from connect to finished.
+
+## Errors during a job
+
+With no paper, the printer accepts the job and the data, reports a first pass
+(`04 03 .. ff`), then about 20 s later `04 04 14 00`: out of paper. It answers
+every status poll with the same frame and **does not recover by itself** once
+paper is loaded. The host has to send `0b` (resume). Each resume makes the
+printer try to feed again (`04 03 .. ff`); if that fails, `04 04 14` comes
+back. Once it succeeds, the normal passes (`.. 01`, `02`, `03`) and `04 06`
+follow.
+
+The driver keeps the job open for 15 minutes after an error, reporting it to
+CUPS (`media-empty-error`, which iOS shows as "out of paper"), and resumes
+with back-off (30 s, 1, 2, 4, 8 min) so loading paper at any point continues
+the print.
 
 ## Differences from earlier notes
 

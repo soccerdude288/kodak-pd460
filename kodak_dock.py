@@ -36,6 +36,7 @@ STATUS_POLL = 0x03
 PRINT_START_LEGACY = 0x05
 ACK = 0x07
 DATA_LEGACY = 0x09
+RESUME = 0x0B  # after a printer error is fixed (the app's "resume" button)
 PRINT_START = 0x10
 DATA = 0x12
 HEARTBEAT = 0x64
@@ -52,6 +53,7 @@ SESSION_END = 0x14
 # States carried in arg1 of P_STATE / P_NOTIFY frames.
 READY = 1
 MEDIA_INFO = 3
+ERROR = 4        # P_STATE: printer error, code in arg2 (e.g. 0x14 out of paper)
 NEEDS_ACK = 5
 FINISHED = 6
 
@@ -63,6 +65,11 @@ PRINT_TIMEOUT = 300.0
 # How long to keep re-offering a job the printer is ignoring (it does that
 # while the head cools after a print) before giving up as "cooling down".
 ACCEPT_TIMEOUT = 600.0
+# How long a job stays open after a printer error (e.g. out of paper), in case
+# the user fixes it and the printer carries on.
+ERROR_WAIT = 900.0
+# First wait before sending RESUME after an error; doubles per attempt, max x16.
+ERROR_POLL = 30.0
 
 # PD460 raster geometry: 4x6 portrait.
 PD460_WIDTH = 1240
@@ -89,6 +96,8 @@ FAULTS = {
     8: "media mismatch",
     9: "cooling down",
     10: "unrecoverable error",
+    # Error codes sent as `04 04 <code> 00` once a job has started.
+    0x14: "out of paper",
 }
 
 # Faults worth retrying later rather than failing the job outright.
@@ -195,6 +204,8 @@ class PrintJob:
         self.accepted = False
         self.temperature = None
         self.first_start = None
+        self.error = None  # (code, monotonic time) of an outstanding `04 04` error
+        self.resumes = 0
         self.battery = None
         # Start the job on the first status frame. The app waits for a READY
         # with arg2 == 0, but the PD460 only ever sends battery-style status
@@ -212,6 +223,18 @@ class PrintJob:
             try:
                 frame = self.conn.recv()
             except socket.timeout:
+                if self.error is not None:
+                    # Waiting out a printer error. The printer does not clear it
+                    # by itself once fixed (e.g. paper loaded): the host has to
+                    # send RESUME. If it is not fixed yet, the error just comes
+                    # back, so keep resuming until it clears or time runs out.
+                    # Each resume makes the printer try to feed (noisily), so
+                    # back off: 30 s, 1, 2, 4, 8 min.
+                    if time.monotonic() - self.error[1] > ERROR_WAIT:
+                        raise PrinterFault(self.error[0])
+                    self.resumes += 1
+                    self.conn.send(Frame(RESUME))
+                    continue
                 # The app polls for status on a read timeout, up to 3 times.
                 polls += 1
                 if polls > max_polls:
@@ -279,7 +302,22 @@ class PrintJob:
                     raise PrinterFault(9)
                 self.job_started = True
                 self.conn.send(self._job_start())
+        elif state == ERROR:
+            # The printer stops and reports why; it may carry on once the
+            # problem is fixed, so keep the job open for a while.
+            now = time.monotonic()
+            if self.error is None:
+                self.error = (frame.arg2, now)
+            elif now - self.error[1] > ERROR_WAIT:
+                raise PrinterFault(frame.arg2)
+            self.conn.settimeout(ERROR_POLL * 2 ** min(self.resumes, 4))
         elif state == MEDIA_INFO:
+            # A resumed print reports a first pass and may still fail to
+            # feed, so the error (and its timer) only clears once a later pass
+            # arrives.
+            if self.error is not None and len(frame.payload) > 7 and frame.payload[7] not in (0, 0xFF):
+                self.error = None
+                self.resumes = 0
             if len(frame.payload) > 6:
                 self.media_type = frame.payload[6]
             # Printing in progress; the dye-sub passes take a while.

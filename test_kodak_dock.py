@@ -19,12 +19,13 @@ def frame(op, a1=0, a2=0, a3=0, payload=b""):
 class FakePrinter(threading.Thread):
     """Speaks the printer side; records what the host sent."""
 
-    def __init__(self, sock, fault=None, hot=False):
+    def __init__(self, sock, fault=None, hot=False, paper_out=False):
         super().__init__(daemon=True)
         self.sock = sock
         self.conn = kd.Connection(None, sock=sock)
         self.fault = fault
         self.hot = hot
+        self.paper_out = paper_out
         self.image = b""
         self.error = None
 
@@ -61,7 +62,14 @@ class FakePrinter(threading.Thread):
                 self.image += data.payload
             s.sendall(frame(0x64))                       # heartbeat mid-job
             self.expect(0x64)
-            s.sendall(frame(0x04, 3, 1, 1, bytes(8)))    # MEDIA_INFO, arg3=1 is not a fault
+            if self.paper_out:
+                s.sendall(frame(0x04, 3, 1, 1, bytes(7) + b"\xff"))  # tries to feed
+                s.sendall(frame(0x04, 4, 0x14, 0))      # out of paper
+                self.expect(0x0B)                        # host resumes after a wait
+                s.sendall(frame(0x04, 3, 1, 1, bytes(7) + b"\xff"))
+                s.sendall(frame(0x04, 4, 0x14, 0))      # still out
+                self.expect(0x0B)                        # paper loaded now
+            s.sendall(frame(0x04, 3, 1, 1, bytes(7) + b"\x01"))  # pass 1; arg3=1 is not a fault
             s.sendall(frame(0x04, 6, 0, 0))              # FINISHED
             self.expect(0x01)                            # END_JOB
         except Exception as e:  # surfaced in the test thread
@@ -69,11 +77,11 @@ class FakePrinter(threading.Thread):
 
 
 class PrintJobTest(unittest.TestCase):
-    def run_job(self, image, fault=None, hot=False):
+    def run_job(self, image, fault=None, hot=False, paper_out=False):
         host, printer = socket.socketpair()
         host.settimeout(5)
         printer.settimeout(5)
-        fake = FakePrinter(printer, fault, hot)
+        fake = FakePrinter(printer, fault, hot, paper_out)
         fake.start()
         job = kd.PrintJob(kd.Connection(None, sock=host), image)
         try:
@@ -98,6 +106,18 @@ class PrintJobTest(unittest.TestCase):
         fake, job = self.run_job(image, hot=True)
         self.assertEqual(fake.image, image)
         self.assertEqual(job.temperature, 0x2A)
+
+    def test_resumes_after_paper_out(self):
+        image = bytes(range(256)) * 100
+        old = kd.ERROR_POLL
+        kd.ERROR_POLL = 0.05
+        try:
+            fake, job = self.run_job(image, paper_out=True)
+        finally:
+            kd.ERROR_POLL = old
+        self.assertEqual(fake.image, image)
+        self.assertEqual(job.resumes, 0)  # cleared once printing really resumed
+        self.assertIsNone(job.error)
 
     def test_fault_raises(self):
         with self.assertRaises(kd.PrinterFault) as ctx:

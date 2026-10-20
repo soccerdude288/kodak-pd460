@@ -14,7 +14,7 @@ import sys
 import time
 
 sys.path.insert(0, "/usr/local/lib/kodak-dock")
-from kodak_dock import TRANSIENT_FAULTS, Connection, PrinterFault, PrintJob  # noqa: E402
+from kodak_dock import FAULTS, TRANSIENT_FAULTS, Connection, PrinterFault, PrintJob  # noqa: E402
 
 CUPS_BACKEND_OK = 0
 CUPS_BACKEND_FAILED = 1
@@ -25,6 +25,7 @@ TRANSIENT_WAIT = 30
 TRANSIENT_LIMIT = 20
 
 FAULT_STATES = {
+    0x14: "media-empty-error",
     2: "cover-open-error",
     3: "media-jam-error",
     4: "media-empty-error",
@@ -73,7 +74,16 @@ def print_page(address, channel, jpeg, page, pages):
 
     def status(frame):
         nonlocal offers
-        if frame.arg1 == 3:
+        if frame.arg1 == 4:
+            # Printer error mid-job; the job stays open in case it is fixed.
+            state = FAULT_STATES.get(frame.arg2)
+            if state:
+                print(f"STATE: +{state}", file=sys.stderr, flush=True)
+            reason = FAULTS.get(frame.arg2, f"error {frame.arg2:#04x}")
+            log("INFO", f"Printer {reason}; fix it and the print will continue")
+        elif frame.arg1 == 3:
+            for state in set(FAULT_STATES.values()):
+                print(f"STATE: -{state}", file=sys.stderr, flush=True)
             log("INFO", f"Printing page {page}/{pages}")
         elif frame.arg1 == 1:
             # Each of these re-offers the job; a second one means the printer
